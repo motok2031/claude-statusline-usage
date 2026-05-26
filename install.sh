@@ -20,8 +20,9 @@ if [ ! -f "$SRC" ]; then
   exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "error: jq is required (brew install jq | apt install jq)" >&2
+PYTHON=${CSU_PYTHON:-python3}
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+  echo "error: python3 is required (it's pre-installed on macOS via Xcode CLT and on most Linux distros)" >&2
   exit 1
 fi
 
@@ -32,9 +33,13 @@ echo "installed: $DEST"
 if [ -f "$SETTINGS" ]; then
   cp "$SETTINGS" "$SETTINGS.bak.$(date +%s)"
   TMP=$(mktemp)
-  jq --arg cmd "$DEST" \
-    '.statusLine = {"type":"command","command":$cmd}' \
-    "$SETTINGS" > "$TMP"
+  "$PYTHON" -c '
+import json, sys
+path, cmd = sys.argv[1], sys.argv[2]
+with open(path) as f: data = json.load(f)
+data["statusLine"] = {"type": "command", "command": cmd}
+print(json.dumps(data, indent=2, ensure_ascii=False))
+' "$SETTINGS" "$DEST" > "$TMP"
   mv "$TMP" "$SETTINGS"
 else
   cat > "$SETTINGS" <<EOF

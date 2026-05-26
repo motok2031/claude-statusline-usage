@@ -47,7 +47,7 @@ Thresholds are intentionally early — Claude Code starts compacting around 50%,
 
 ## Install
 
-Requires `jq` (`brew install jq` or `apt install jq`).
+Only requires `python3`, which is pre-installed on macOS (Xcode Command Line Tools) and on essentially every Linux distro. No `pip install`, no third-party packages — just the standard library.
 
 ```bash
 git clone https://github.com/motok2031/claude-statusline-usage.git
@@ -91,6 +91,7 @@ Everything tunable lives at the top of `statusline.sh`. You can either edit the 
 | Env var              | Default | What it does                                |
 | -------------------- | ------- | ------------------------------------------- |
 | `CSU_BAR_WIDTH`      | `8`     | Width of each rate-limit bar in cells       |
+| `CSU_PYTHON`         | `python3` | Path to the Python 3 binary. pyenv users should set this to the real binary (e.g. `/usr/bin/python3`) to skip the shim's ~60ms-per-call overhead. |
 | `CSU_HEALTH_WARN`    | `20`    | Context `%` at which `%` turns orange       |
 | `CSU_HEALTH_HOT`     | `33`    | … turns orange-red                          |
 | `CSU_HEALTH_CRIT`    | `40`    | … turns red                                 |
@@ -116,7 +117,7 @@ Example — bigger bars, stricter context thresholds:
 
 ## Compatibility
 
-- Tested on macOS (zsh/bash) and Linux (bash). Should work on anything POSIX with `bash`, `jq`, `awk`, `sed`.
+- Tested on macOS (zsh/bash) and Linux (bash). Should work on anything POSIX with `bash`, `python3`, `awk`, `date`.
 - Requires a terminal with 256-color support (basically anything from this decade).
 - Reads Claude Code's documented status-line stdin JSON — model, context window, rate limits, transcript path.
 

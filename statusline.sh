@@ -10,6 +10,11 @@
 # Bar width in cells (each limit bar). Smaller = more compact.
 BAR_WIDTH=${CSU_BAR_WIDTH:-8}
 
+# Path to the Python 3 interpreter. Default `python3` works on most systems.
+# pyenv users: set this to the real binary (e.g. /usr/bin/python3 or
+# ~/.pyenv/versions/X.Y.Z/bin/python3) to skip the ~60ms shim overhead per call.
+PYTHON=${CSU_PYTHON:-python3}
+
 # Context-usage health thresholds (percent of context window used).
 # Below WARN  → green
 # WARN..HOT-1 → orange
@@ -33,25 +38,58 @@ COLOR_CRIT=${CSU_COLOR_CRIT:-196}       # ctx% when critical  (red)
 # Implementation
 # ============================================================
 
-input=$(cat)
-
-# --- Model name: "Claude Opus 4.7 (1M context)" → "opus-4.7[1m]" ---
-MODEL_RAW=$(echo "$input" | jq -r '.model.display_name // .model.id // "?"')
-MODEL_ID=$(echo "$input"  | jq -r '.model.id // ""')
-MODEL=$(echo "$MODEL_RAW" | sed -E 's/[[:space:]]*\(.*//' | tr '[:upper:] ' '[:lower:]-')
-if echo " $MODEL_RAW $MODEL_ID " | grep -qi '1m'; then
-  MODEL="${MODEL}[1m]"
-fi
-
-CTX_USED=$(echo "$input" | jq -r '.context_window.total_input_tokens // 0')
-CTX_MAX=$(echo "$input"  | jq -r '.context_window.context_window_size // 0')
-CTX_PCT=$(echo "$input"  | jq -r '.context_window.used_percentage // 0')
-
-F_PCT=$(echo "$input"   | jq -r '.rate_limits.five_hour.used_percentage // empty')
-F_RESET=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-W_PCT=$(echo "$input"   | jq -r '.rate_limits.seven_day.used_percentage // empty')
-W_RESET=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
 NOW=$(date +%s)
+
+# Parse the stdin JSON + scan the session transcript for cumulative in/out
+# tokens — all in a single Python process. Replaces ~11 jq + sed/tr/grep
+# subprocess spawns from the previous implementation.
+IFS=$'\t' read -r MODEL CTX_USED CTX_MAX CTX_PCT F_PCT F_RESET W_PCT W_RESET TI TO < <(
+"$PYTHON" -c '
+import json, os, re, sys
+d = json.load(sys.stdin)
+
+def g(o, *ks):
+    for k in ks:
+        if not isinstance(o, dict): return None
+        o = o.get(k)
+        if o is None: return None
+    return o
+
+raw = g(d, "model", "display_name") or g(d, "model", "id") or "?"
+mid = g(d, "model", "id") or ""
+model = re.sub(r"\s*\(.*", "", raw).lower().replace(" ", "-")
+if "1m" in (raw + " " + mid).lower():
+    model += "[1m]"
+
+trans = g(d, "transcript_path") or ""
+ti = to = 0
+if trans and os.path.isfile(trans):
+    with open(trans) as fh:
+        for line in fh:
+            try: o = json.loads(line)
+            except Exception: continue
+            if o.get("type") != "assistant": continue
+            u = (o.get("message") or {}).get("usage")
+            if not u: continue
+            ti += (u.get("input_tokens") or 0)
+            ti += (u.get("cache_creation_input_tokens") or 0)
+            ti += (u.get("cache_read_input_tokens") or 0)
+            to += (u.get("output_tokens") or 0)
+
+s = lambda v: "" if v is None else str(v)
+print("\t".join(s(x) for x in [
+    model,
+    g(d, "context_window", "total_input_tokens") or 0,
+    g(d, "context_window", "context_window_size") or 0,
+    g(d, "context_window", "used_percentage") or 0,
+    g(d, "rate_limits", "five_hour", "used_percentage"),
+    g(d, "rate_limits", "five_hour", "resets_at"),
+    g(d, "rate_limits", "seven_day", "used_percentage"),
+    g(d, "rate_limits", "seven_day", "resets_at"),
+    ti, to,
+]))
+'
+)
 
 # --- ANSI helpers ---
 R=$'\e[0m'
@@ -112,22 +150,6 @@ bar_dual() {
   for ((i=sn; i<w;  i++)); do out="${out}${EMPTY_C}─"; done
   printf '%s%b' "$out" "$R"
 }
-
-# Cumulative in/out for this session by scanning the transcript.
-# "in" = input + cache_creation + cache_read across all assistant turns.
-TRANS=$(echo "$input" | jq -r '.transcript_path // empty')
-TI=0; TO=0
-if [ -n "$TRANS" ] && [ -f "$TRANS" ]; then
-  read TI TO < <(
-    jq -r 'select(.type=="assistant" and .message.usage!=null)
-      | [((.message.usage.input_tokens // 0)
-          + (.message.usage.cache_creation_input_tokens // 0)
-          + (.message.usage.cache_read_input_tokens // 0)),
-         (.message.usage.output_tokens // 0)]
-      | @tsv' "$TRANS" 2>/dev/null \
-    | awk 'BEGIN{i=0;o=0}{i+=$1;o+=$2}END{print i+0,o+0}'
-  )
-fi
 
 render_limit() {
   local label=$1 pct=$2 reset_at=$3 window=$4
